@@ -72,45 +72,20 @@ def is_reviewer(member: discord.Member) -> bool:
     return bool(role_id and any(role.id == role_id for role in member.roles))
 
 
-def build_panel_embed(guild: discord.Guild) -> discord.Embed:
-    embed = discord.Embed(
-        title="🎟️ Đăng ký Whitelist",
-        description=(
-            "Đọc hướng dẫn bên dưới và điền thông tin chính xác để được xét duyệt sớm nhất nhé!"
-        ),
-        colour=SETTINGS.accent_colour,
+def build_panel_text(guild_name: str) -> str:
+    return (
+        "## 🎟️ ĐĂNG KÝ WHITELIST\n"
+        f"✨ Chào mừng bạn đến với **{guild_name}**. Hoàn thành các bước bên dưới để gửi hồ sơ.\n\n"
+        "### 🔗 1. Xác thực tài khoản\n"
+        "> Bấm **Xác thực tài khoản** để hệ thống ghi nhận Discord của bạn.\n\n"
+        "### 💌 2. Nộp đơn\n"
+        "> Điền đúng thông tin và trả lời câu hỏi Roleplay trong form.\n\n"
+        "### 🔑 Mã bảo lãnh\n"
+        "> Có mã từ bạn bè thì nhập trước khi nộp. Không có mã vẫn đăng ký bình thường.\n\n"
+        "### ⚠️ Lưu ý\n"
+        "> Thông tin sai hoặc spam form có thể bị từ chối.\n\n"
+        f"-# {SETTINGS.server_name} • WHITELIST SYSTEM"
     )
-    if guild.icon:
-        embed.set_author(name=guild.name, icon_url=guild.icon.url)
-
-    embed.add_field(
-        name="🔗 Xác thực tài khoản",
-        value=(
-            "Bấm **Xác thực tài khoản** để hệ thống ghi nhận Discord của bạn trước khi nộp đơn."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="📝 Nội dung đăng ký",
-        value=(
-            "Form gồm **Họ và tên, Giới tính, Tuổi, Steam Hex** và một câu hỏi kiến thức Roleplay."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🔑 Mã bảo lãnh",
-        value="Có mã từ bạn bè thì nhập trước khi gửi đơn. Không có mã vẫn đăng ký bình thường.",
-        inline=False,
-    )
-    embed.add_field(
-        name="⚠️ Lưu ý",
-        value="Cố tình khai sai hoặc spam form có thể bị từ chối vĩnh viễn.",
-        inline=False,
-    )
-    if SETTINGS.banner_path.is_file():
-        embed.set_image(url=f"attachment://{SETTINGS.banner_path.name}")
-    embed.set_footer(text=f"{SETTINGS.server_name} • WHITELIST SYSTEM")
-    return embed
 
 
 def load_answers(application: dict[str, Any]) -> list[dict[str, str]]:
@@ -132,60 +107,76 @@ def load_answers(application: dict[str, Any]) -> list[dict[str, str]]:
     return answers
 
 
-def build_review_embed(application: dict[str, Any]) -> discord.Embed:
-    status = str(application["status"])
-    colour = {
+def review_colour(status: str) -> int:
+    return {
         "pending": SETTINGS.accent_colour,
         "accepted": 0x57F287,
         "rejected": 0xED4245,
         "error": 0xFEE75C,
     }.get(status, SETTINGS.accent_colour)
 
-    embed = discord.Embed(
-        title=f"📨 Đơn Whitelist #{application['id']:04d}",
-        description=f"Đơn đăng ký của <@{application['user_id']}>",
-        colour=colour,
-        timestamp=parse_iso(application.get("submitted_at")),
+
+def build_review_header(application: dict[str, Any]) -> str:
+    status = str(application["status"])
+    return (
+        f"## 💌 ĐƠN WHITELIST `#{application['id']:04d}`\n"
+        f"**Người nộp:** <@{application['user_id']}>\n"
+        f"-# @{trim(str(application['username']), 80)} • "
+        f"{STATUS_LABELS.get(status, status)} • "
+        f"{discord_timestamp(application.get('submitted_at'), 'R')}"
     )
 
-    avatar_url = application.get("avatar_url")
-    if avatar_url:
-        embed.set_thumbnail(url=avatar_url)
 
+def build_review_answers(application: dict[str, Any]) -> str:
+    blocks: list[str] = []
+    remaining = 1900
     for index, answer in enumerate(load_answers(application), start=1):
-        embed.add_field(
-            name=f"{index}. {trim(answer['label'], 240)}",
-            value=trim(answer["value"], 900),
-            inline=False,
-        )
+        label = trim(answer["label"], 120)
+        prefix = f"### {index}. {label}\n> "
+        separator_cost = 2 if blocks else 0
+        available = remaining - len(prefix) - separator_cost
+        if available < 20:
+            blocks.append("> …")
+            break
 
+        value = trim(answer["value"], min(850, available))
+        block = prefix + value.replace("\n", "\n> ")
+        blocks.append(block)
+        remaining -= len(block) + separator_cost
+
+    return "\n\n".join(blocks) or "> Không đọc được nội dung đơn."
+
+
+def build_review_stats(application: dict[str, Any]) -> str:
     guarantor = "Không sử dụng"
     if application.get("guarantor_user_id"):
         code = application.get("guarantor_code") or "-"
         guarantor = f"<@{application['guarantor_user_id']}> • `{code}`"
 
-    stats = (
+    return (
+        "### 🪪 THÔNG TIN DISCORD\n"
         f"**User ID:** `{application['user_id']}`\n"
-        f"**Username:** `{trim(str(application['username']), 80)}`\n"
         f"**Tài khoản tạo:** {discord_timestamp(application.get('account_created_at'), 'R')}\n"
         f"**Vào server:** {discord_timestamp(application.get('guild_joined_at'), 'R')}\n"
-        f"**Đã xác thực:** {'Có' if application.get('verified_at') else 'Không'}\n"
+        f"**Xác thực:** {'✅ Có' if application.get('verified_at') else '❌ Chưa'}\n"
         f"**Bảo lãnh:** {guarantor}"
     )
-    embed.add_field(name="Submission stats", value=stats, inline=False)
 
-    if status in {"accepted", "rejected"}:
-        result_text = (
-            f"**Kết quả:** {STATUS_LABELS[status]}\n"
-            f"**Người duyệt:** <@{application.get('reviewer_id')}>\n"
-            f"**Thời gian:** {discord_timestamp(application.get('reviewed_at'))}"
-        )
-        if application.get("reason"):
-            result_text += f"\n**Lý do:** {trim(str(application['reason']), 900)}"
-        embed.add_field(name="Kết quả xét duyệt", value=result_text, inline=False)
 
-    embed.set_footer(text=f"{SETTINGS.server_name} • {STATUS_LABELS.get(status, status)}")
-    return embed
+def build_review_result(application: dict[str, Any]) -> str | None:
+    status = str(application["status"])
+    if status not in {"accepted", "rejected"}:
+        return None
+
+    result = (
+        "### ✨ KẾT QUẢ XÉT DUYỆT\n"
+        f"**Trạng thái:** {STATUS_LABELS[status]}\n"
+        f"**Người duyệt:** <@{application.get('reviewer_id')}>\n"
+        f"**Thời gian:** {discord_timestamp(application.get('reviewed_at'))}"
+    )
+    if application.get("reason"):
+        result += f"\n**Lý do:** {trim(str(application['reason']), 650)}"
+    return result
 
 
 async def get_channel(channel_id: int) -> discord.abc.Messageable | None:
@@ -324,8 +315,7 @@ async def submit_application(
 
     try:
         review_message = await review_channel.send(
-            embed=build_review_embed(application),
-            view=ReviewView(),
+            view=ReviewLayout(application),
             allowed_mentions=ALLOWED_MENTIONS,
         )
         await asyncio.to_thread(
@@ -422,11 +412,12 @@ async def process_decision(
         if updated is None:
             return "✅ Đã xử lý đơn nhưng không đọc lại được dữ liệu."
 
-        disabled_view = ReviewView(disabled=True)
         try:
             await interaction.message.edit(
-                embed=build_review_embed(updated),
-                view=disabled_view,
+                content=None,
+                embeds=[],
+                attachments=[],
+                view=ReviewLayout(updated, disabled=True),
             )
         except discord.HTTPException:
             log.exception("Không cập nhật được review message %s", interaction.message.id)
@@ -543,10 +534,7 @@ class ReasonModal(discord.ui.Modal):
         await interaction.followup.send(result, ephemeral=True)
 
 
-class WhitelistPanelView(discord.ui.View):
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
-
+class WhitelistActionRow(discord.ui.ActionRow):
     @discord.ui.button(
         label="Xác thực tài khoản",
         emoji="🔗",
@@ -642,9 +630,9 @@ class WhitelistPanelView(discord.ui.View):
         await interaction.response.send_modal(GuarantorCodeModal())
 
 
-class ReviewView(discord.ui.View):
+class ReviewActionRow(discord.ui.ActionRow):
     def __init__(self, *, disabled: bool = False) -> None:
-        super().__init__(timeout=None)
+        super().__init__()
         if disabled:
             for child in self.children:
                 if isinstance(child, discord.ui.Button):
@@ -697,11 +685,80 @@ class ReviewView(discord.ui.View):
         await interaction.response.send_modal(ReasonModal("rejected"))
 
 
+class WhitelistPanelLayout(discord.ui.LayoutView):
+    def __init__(
+        self,
+        guild_name: str | None = None,
+        image_filename: str | None = None,
+    ) -> None:
+        super().__init__(timeout=None)
+        container = discord.ui.Container(accent_colour=SETTINGS.accent_colour)
+
+        if image_filename:
+            gallery = discord.ui.MediaGallery()
+            gallery.add_item(
+                media=f"attachment://{image_filename}",
+                description=f"Đăng ký whitelist {guild_name or SETTINGS.server_name}",
+            )
+            container.add_item(gallery)
+            container.add_item(discord.ui.Separator())
+
+        container.add_item(
+            discord.ui.TextDisplay(build_panel_text(guild_name or SETTINGS.server_name))
+        )
+        container.add_item(discord.ui.Separator())
+        container.add_item(WhitelistActionRow())
+        self.add_item(container)
+
+
+class ReviewLayout(discord.ui.LayoutView):
+    def __init__(
+        self,
+        application: dict[str, Any] | None = None,
+        *,
+        disabled: bool = False,
+    ) -> None:
+        super().__init__(timeout=None)
+        status = str(application["status"]) if application else "pending"
+        container = discord.ui.Container(accent_colour=review_colour(status))
+
+        if application:
+            avatar_url = application.get("avatar_url")
+            if avatar_url:
+                container.add_item(
+                    discord.ui.Section(
+                        discord.ui.TextDisplay(build_review_header(application)),
+                        accessory=discord.ui.Thumbnail(
+                            avatar_url,
+                            description=f"Avatar của {application.get('display_name') or application.get('username')}",
+                        ),
+                    )
+                )
+            else:
+                container.add_item(discord.ui.TextDisplay(build_review_header(application)))
+
+            container.add_item(discord.ui.Separator())
+            container.add_item(discord.ui.TextDisplay(build_review_answers(application)))
+            container.add_item(discord.ui.Separator())
+            container.add_item(discord.ui.TextDisplay(build_review_stats(application)))
+
+            result_text = build_review_result(application)
+            if result_text:
+                container.add_item(discord.ui.Separator())
+                container.add_item(discord.ui.TextDisplay(result_text))
+        else:
+            container.add_item(discord.ui.TextDisplay("## 💌 VENUS WHITELIST REVIEW"))
+
+        container.add_item(discord.ui.Separator())
+        container.add_item(ReviewActionRow(disabled=disabled))
+        self.add_item(container)
+
+
 class VenusWhitelistBot(commands.Bot):
     async def setup_hook(self) -> None:
         await asyncio.to_thread(DB.initialize)
-        self.add_view(WhitelistPanelView())
-        self.add_view(ReviewView())
+        self.add_view(WhitelistPanelLayout())
+        self.add_view(ReviewLayout())
 
         try:
             if SETTINGS.test_guild_id:
@@ -746,14 +803,14 @@ async def whitelist_panel(
         return
 
     await interaction.response.defer(ephemeral=True, thinking=True)
+    image_filename = SETTINGS.banner_path.name if SETTINGS.banner_path.is_file() else None
     kwargs: dict[str, Any] = {
-        "embed": build_panel_embed(interaction.guild),
-        "view": WhitelistPanelView(),
+        "view": WhitelistPanelLayout(interaction.guild.name, image_filename),
         "allowed_mentions": ALLOWED_MENTIONS,
     }
     file: discord.File | None = None
-    if SETTINGS.banner_path.is_file():
-        file = discord.File(SETTINGS.banner_path, filename=SETTINGS.banner_path.name)
+    if image_filename:
+        file = discord.File(SETTINGS.banner_path, filename=image_filename)
         kwargs["file"] = file
 
     try:

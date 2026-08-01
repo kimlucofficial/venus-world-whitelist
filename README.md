@@ -1,6 +1,6 @@
 # Venus World Whitelist Bot 🎟️
 
-Bot whitelist riêng, tách hoàn toàn khỏi bot welcome hiện tại.
+Bot whitelist riêng, tách hoàn toàn khỏi bot welcome hiện tại. Giao diện bảng đăng ký và đơn staff dùng **Discord Components V2** theo cùng phong cách khung lớn của bot Welcome.
 
 ## Luồng hoạt động
 

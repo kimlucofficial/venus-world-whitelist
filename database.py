@@ -530,6 +530,58 @@ class Database:
 
         return True, "Đã đồng ý bảo lãnh." if status == "accepted" else "Đã từ chối bảo lãnh."
 
+    def rollback_guarantor_acceptance(self, request_id: int) -> bool:
+        """Undo an accepted guarantor request when Discord role assignment fails."""
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            request = connection.execute(
+                "SELECT * FROM guarantor_requests WHERE id = ?",
+                (request_id,),
+            ).fetchone()
+            if not request or request["status"] != "accepted":
+                return False
+
+            guild_id = int(request["guild_id"])
+            applicant_user_id = int(request["applicant_user_id"])
+            code = str(request["code"])
+            owner_user_id = int(request["owner_user_id"])
+
+            referral = connection.execute(
+                """
+                SELECT code, owner_user_id FROM referrals
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (guild_id, applicant_user_id),
+            ).fetchone()
+            if (
+                referral
+                and str(referral["code"]) == code
+                and int(referral["owner_user_id"]) == owner_user_id
+            ):
+                connection.execute(
+                    "DELETE FROM referrals WHERE guild_id = ? AND user_id = ?",
+                    (guild_id, applicant_user_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE guarantor_codes
+                    SET use_count = MAX(0, use_count - 1)
+                    WHERE guild_id = ? AND code = ?
+                    """,
+                    (guild_id, code),
+                )
+
+            cursor = connection.execute(
+                """
+                UPDATE guarantor_requests
+                SET status = 'pending', reviewed_at = NULL,
+                    reviewer_id = NULL, reason = NULL
+                WHERE id = ? AND status = 'accepted'
+                """,
+                (request_id,),
+            )
+            return cursor.rowcount == 1
+
     def create_application(
         self,
         *,

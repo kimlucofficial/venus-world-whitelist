@@ -13,9 +13,9 @@ Bot whitelist riêng của Venus World, dùng **Discord Components V2** cùng ph
    - Từ chối bảo lãnh
    - Đồng ý + lý do
    - Từ chối + lý do
-6. Khi staff đồng ý, mã mới được gắn vào người được bảo lãnh.
-7. Người đó tiếp tục bấm **Đăng ký** để nộp đơn Whitelist.
-8. Đơn Whitelist cũng có 4 lựa chọn duyệt như trước.
+6. Khi staff đồng ý, bot tự cấp role `WHITELIST_ROLE_ID` cho người được bảo lãnh.
+7. Nếu có `UNVERIFIED_ROLE_ID`, bot tự gỡ role này khi đủ quyền.
+8. Người được bảo lãnh không cần nộp thêm đơn Whitelist.
 
 ## Cơ chế mã bảo lãnh
 
@@ -24,8 +24,9 @@ Bot whitelist riêng của Venus World, dùng **Discord Components V2** cùng ph
 - Khi mã đã dùng hết, chủ mã bấm lại sẽ nhận mã mới.
 - Mỗi lần người chơi bấm lấy mã, bot gửi log ngay.
 - Nếu chưa cấu hình kênh log riêng, log bảo lãnh sẽ dùng `WHITELIST_LOG_CHANNEL_ID`; nếu vẫn trống thì gửi vào `WHITELIST_REVIEW_CHANNEL_ID`.
-- Người nhập mã phải chờ staff duyệt bảo lãnh trước khi nộp đơn có bảo lãnh.
-- Khi duyệt xong, bot DM kết quả cho cả người bảo lãnh và người được bảo lãnh.
+- Người nhập mã phải chờ staff duyệt bảo lãnh.
+- Khi đồng ý, bot cấp role Whitelist trực tiếp và DM kết quả cho cả hai bên.
+- Nếu bot không cấp được role, hệ thống hoàn tác yêu cầu về trạng thái chờ để staff sửa quyền rồi duyệt lại.
 
 ## Discord Developer Portal
 
@@ -90,6 +91,7 @@ Bản cập nhật tự tạo thêm bảng database mới, không cần xóa fil
 
 - `/whitelist_panel` — gửi bảng đăng ký.
 - `/whitelist_status` — xem trạng thái xác thực, bảo lãnh và đơn.
+- `/whitelist_guarantor_sync` — cấp lại role cho trường hợp bảo lãnh cũ đã duyệt trước bản V5.
 - `/whitelist_reset` — reset hồ sơ để thành viên nộp lại.
 - `/whitelist_code_create` — staff tạo mã thủ công.
 - `/whitelist_code_disable` — tắt mã.

@@ -97,7 +97,7 @@ def build_panel_text(guild_name: str) -> str:
         f"### {EMOJI_GET_GUARANTOR} 2. Lấy mã bảo lãnh\n"
         "> Chỉ thành viên đã có **role Whitelist** mới lấy được mã để bảo lãnh bạn bè.\n\n"
         f"### {EMOJI_GUARANTOR} 3. Nhập mã bảo lãnh\n"
-        "> Nhập mã và chờ staff duyệt yêu cầu bảo lãnh trước khi nộp đơn.\n\n"
+        "> Nhập mã và chờ staff duyệt. Nếu được đồng ý, hệ thống sẽ tự cấp **role Whitelist**.\n\n"
         f"### {EMOJI_APPLY} 4. Nộp đơn\n"
         "> Điền đúng thông tin và trả lời câu hỏi Roleplay trong form.\n\n"
         f"### {EMOJI_NOTE} Lưu ý\n"
@@ -223,7 +223,8 @@ def build_guarantor_review_body(request: dict[str, Any]) -> str:
         f"**Người bảo lãnh:** <@{request['owner_user_id']}>\n"
         f"**Người được bảo lãnh:** <@{request['applicant_user_id']}>\n"
         f"**Mã sử dụng:** `{request['code']}`\n"
-        f"**Gửi lúc:** {discord_timestamp(request.get('requested_at'))}"
+        f"**Gửi lúc:** {discord_timestamp(request.get('requested_at'))}\n"
+        "-# Đồng ý bảo lãnh sẽ tự cấp role Whitelist cho người được bảo lãnh."
     )
 
 
@@ -238,6 +239,8 @@ def build_guarantor_review_result(request: dict[str, Any]) -> str | None:
         f"**Người duyệt:** <@{request.get('reviewer_id')}>\n"
         f"**Thời gian:** {discord_timestamp(request.get('reviewed_at'))}"
     )
+    if status == "accepted":
+        text += "\n**Role Whitelist:** ✅ Đã cấp tự động"
     if request.get("reason"):
         text += f"\n**Lý do:** {trim(str(request['reason']), 650)}"
     return text
@@ -343,7 +346,8 @@ async def send_guarantor_result_log(
             f"**Người được bảo lãnh:** <@{request['applicant_user_id']}>\n"
             f"**Mã:** `{request['code']}`\n"
             f"**Kết quả:** {GUARANTOR_STATUS_LABELS.get(status, status)}\n"
-            f"**Người duyệt:** <@{request.get('reviewer_id')}>"
+            f"**Người duyệt:** <@{request.get('reviewer_id')}>\n"
+            f"**Role Whitelist:** {'✅ Đã cấp' if status == 'accepted' else '—'}"
         ),
         colour=0x57F287 if status == "accepted" else 0xED4245,
         timestamp=utc_now(),
@@ -370,7 +374,7 @@ async def notify_guarantor_parties(
         description = (
             f"Yêu cầu bảo lãnh bằng mã `{request['code']}` tại **{SETTINGS.server_name}** "
             + (
-                "đã được duyệt. Bạn có thể tiếp tục nộp đơn Whitelist."
+                "đã được duyệt và bạn đã được cấp **role Whitelist** tự động."
                 if accepted
                 else "đã bị từ chối. Bạn vẫn có thể nộp đơn không dùng bảo lãnh hoặc nhập mã khác."
             )
@@ -501,7 +505,7 @@ async def submit_guarantor_request(
 
     return (
         f"✅ Đã gửi yêu cầu bảo lãnh **#{request_id:04d}** cho staff duyệt. "
-        "Sau khi được đồng ý, bạn mới nộp đơn Whitelist có bảo lãnh."
+        "Nếu được đồng ý, bot sẽ tự cấp role Whitelist cho bạn."
     )
 
 
@@ -751,6 +755,24 @@ async def process_guarantor_decision(
                 f"**{GUARANTOR_STATUS_LABELS.get(request['status'], request['status'])}**."
             )
 
+        applicant = await fetch_member(
+            interaction.guild,
+            int(request["applicant_user_id"]),
+        )
+
+        whitelist_role: discord.Role | None = None
+        bot_member = interaction.guild.me
+        if status == "accepted":
+            whitelist_role = interaction.guild.get_role(SETTINGS.whitelist_role_id)
+            if whitelist_role is None:
+                return "❌ Không tìm thấy WHITELIST_ROLE_ID trong server."
+            if bot_member is None or not bot_member.guild_permissions.manage_roles:
+                return "❌ Bot thiếu quyền **Manage Roles**."
+            if whitelist_role >= bot_member.top_role:
+                return "❌ Role Whitelist đang cao hơn hoặc ngang role cao nhất của bot."
+            if applicant is None:
+                return "❌ Người được bảo lãnh không còn trong server."
+
         finalized, message = await asyncio.to_thread(
             DB.finalize_guarantor_request,
             request_id=int(request["id"]),
@@ -760,6 +782,64 @@ async def process_guarantor_decision(
         )
         if not finalized:
             return f"❌ {message}"
+
+        if status == "accepted" and applicant is not None and whitelist_role is not None:
+            try:
+                if whitelist_role not in applicant.roles:
+                    await applicant.add_roles(
+                        whitelist_role,
+                        reason=(
+                            "Guarantor request accepted by "
+                            f"{interaction.user} ({interaction.user.id})"
+                        ),
+                    )
+            except discord.Forbidden:
+                rolled_back = await asyncio.to_thread(
+                    DB.rollback_guarantor_acceptance,
+                    int(request["id"]),
+                )
+                if rolled_back:
+                    return (
+                        "❌ Bot không đủ quyền cấp role Whitelist. "
+                        "Yêu cầu đã được hoàn tác về trạng thái chờ để staff sửa quyền rồi duyệt lại."
+                    )
+                return (
+                    "⚠️ Bảo lãnh đã được ghi nhận nhưng bot không cấp được role và không thể hoàn tác. "
+                    "Staff cần cấp role thủ công và kiểm tra log."
+                )
+            except discord.HTTPException:
+                log.exception("Discord API lỗi khi cấp role Whitelist qua bảo lãnh")
+                rolled_back = await asyncio.to_thread(
+                    DB.rollback_guarantor_acceptance,
+                    int(request["id"]),
+                )
+                if rolled_back:
+                    return (
+                        "❌ Discord lỗi khi cấp role Whitelist. "
+                        "Yêu cầu đã được hoàn tác về trạng thái chờ để duyệt lại."
+                    )
+                return (
+                    "⚠️ Bảo lãnh đã được ghi nhận nhưng Discord lỗi khi cấp role và không thể hoàn tác. "
+                    "Staff cần cấp role thủ công."
+                )
+
+            if SETTINGS.unverified_role_id and bot_member is not None:
+                unverified_role = interaction.guild.get_role(SETTINGS.unverified_role_id)
+                if (
+                    unverified_role
+                    and unverified_role in applicant.roles
+                    and unverified_role < bot_member.top_role
+                ):
+                    try:
+                        await applicant.remove_roles(
+                            unverified_role,
+                            reason="Guarantor request accepted",
+                        )
+                    except (discord.Forbidden, discord.HTTPException):
+                        log.warning(
+                            "Đã cấp role Whitelist nhưng không gỡ được role chưa xác thực cho %s",
+                            applicant.id,
+                        )
 
         updated = await asyncio.to_thread(
             DB.get_guarantor_request_by_id,
@@ -781,10 +861,6 @@ async def process_guarantor_decision(
                 interaction.message.id,
             )
 
-        applicant = await fetch_member(
-            interaction.guild,
-            int(updated["applicant_user_id"]),
-        )
         owner = await fetch_member(
             interaction.guild,
             int(updated["owner_user_id"]),
@@ -793,7 +869,7 @@ async def process_guarantor_decision(
         await send_guarantor_result_log(interaction.guild, updated)
 
         return (
-            f"✅ Đã **đồng ý** bảo lãnh #{updated['id']:04d}."
+            f"✅ Đã **đồng ý** bảo lãnh #{updated['id']:04d} và cấp role Whitelist."
             if status == "accepted"
             else f"✅ Đã **từ chối** bảo lãnh #{updated['id']:04d}."
         )
@@ -1451,6 +1527,94 @@ async def whitelist_status(interaction: discord.Interaction) -> None:
     )
     await interaction.response.send_message(
         embed=embed,
+        ephemeral=True,
+        allowed_mentions=ALLOWED_MENTIONS,
+    )
+
+
+@bot.tree.command(
+    name="whitelist_guarantor_sync",
+    description="Cấp lại role cho người đã được duyệt bảo lãnh",
+)
+@app_commands.guild_only()
+@app_commands.describe(member="Người đã được staff đồng ý bảo lãnh")
+async def whitelist_guarantor_sync(
+    interaction: discord.Interaction,
+    member: discord.Member,
+) -> None:
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+        return
+    if not is_reviewer(interaction.user):
+        await interaction.response.send_message("❌ Bạn không có quyền.", ephemeral=True)
+        return
+
+    request = await asyncio.to_thread(
+        DB.get_latest_guarantor_request,
+        interaction.guild.id,
+        member.id,
+    )
+    if request is None or request["status"] != "accepted":
+        await interaction.response.send_message(
+            "❌ Thành viên này chưa có yêu cầu bảo lãnh đã được đồng ý.",
+            ephemeral=True,
+        )
+        return
+
+    whitelist_role = interaction.guild.get_role(SETTINGS.whitelist_role_id)
+    bot_member = interaction.guild.me
+    if whitelist_role is None:
+        await interaction.response.send_message(
+            "❌ Không tìm thấy WHITELIST_ROLE_ID trong server.",
+            ephemeral=True,
+        )
+        return
+    if bot_member is None or not bot_member.guild_permissions.manage_roles:
+        await interaction.response.send_message(
+            "❌ Bot thiếu quyền **Manage Roles**.",
+            ephemeral=True,
+        )
+        return
+    if whitelist_role >= bot_member.top_role:
+        await interaction.response.send_message(
+            "❌ Role Whitelist đang cao hơn hoặc ngang role cao nhất của bot.",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        if whitelist_role not in member.roles:
+            await member.add_roles(
+                whitelist_role,
+                reason=f"Guarantor role sync by {interaction.user} ({interaction.user.id})",
+            )
+        if SETTINGS.unverified_role_id:
+            unverified_role = interaction.guild.get_role(SETTINGS.unverified_role_id)
+            if (
+                unverified_role
+                and unverified_role in member.roles
+                and unverified_role < bot_member.top_role
+            ):
+                await member.remove_roles(
+                    unverified_role,
+                    reason="Guarantor role sync",
+                )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ Bot không đủ quyền cấp hoặc gỡ role.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        log.exception("Discord API lỗi khi đồng bộ role bảo lãnh")
+        await interaction.response.send_message(
+            "❌ Discord lỗi khi đồng bộ role.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        f"✅ Đã đồng bộ role Whitelist cho {member.mention} từ bảo lãnh `#{int(request['id']):04d}`.",
         ephemeral=True,
         allowed_mentions=ALLOWED_MENTIONS,
     )

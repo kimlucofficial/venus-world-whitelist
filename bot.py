@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 import re
 import secrets
+import sqlite3
 import string
 from typing import Any
 
@@ -28,6 +29,7 @@ log = logging.getLogger("venus-whitelist")
 
 ALLOWED_MENTIONS = discord.AllowedMentions.none()
 REVIEW_LOCK = asyncio.Lock()
+GUARANTOR_REVIEW_LOCK = asyncio.Lock()
 CODE_PATTERN = re.compile(r"^[A-Z0-9-]{4,20}$")
 
 EMOJI_WHITELIST = "<:96359bubbleheart:1532387513031721101>"
@@ -35,12 +37,19 @@ EMOJI_WELCOME = "<a:fwb_cloudfly:1532586588658204724>"
 EMOJI_VERIFY = "<a:SaF_Bluerollingstar:1532586674952081519>"
 EMOJI_APPLY = "<:emoji_71:1533137766228168754>"
 EMOJI_GUARANTOR = "<a:65447kuromi:1532351473889841293>"
+EMOJI_GET_GUARANTOR = "<a:758151kuromithx:1532351505569419296>"
 EMOJI_NOTE = "<:2039bubblequestion:1532386833764319374>"
 STATUS_LABELS = {
     "pending": "⏳ Đang chờ duyệt",
     "accepted": "✅ Đã đồng ý",
     "rejected": "❌ Đã từ chối",
     "error": "⚠️ Lỗi gửi đơn",
+}
+GUARANTOR_STATUS_LABELS = {
+    "pending": "⏳ Chờ duyệt bảo lãnh",
+    "accepted": "✅ Bảo lãnh đã được duyệt",
+    "rejected": "❌ Bảo lãnh bị từ chối",
+    "error": "⚠️ Lỗi gửi yêu cầu",
 }
 
 
@@ -85,10 +94,12 @@ def build_panel_text(guild_name: str) -> str:
         f"{EMOJI_WELCOME} Chào mừng bạn đến với **{guild_name}**. Hoàn thành các bước bên dưới để gửi hồ sơ.\n\n"
         f"### {EMOJI_VERIFY} 1. Xác thực tài khoản\n"
         "> Bấm **Xác thực tài khoản** để hệ thống ghi nhận Discord của bạn.\n\n"
-        f"### {EMOJI_APPLY} 2. Nộp đơn\n"
+        f"### {EMOJI_GET_GUARANTOR} 2. Lấy mã bảo lãnh\n"
+        "> Chỉ thành viên đã có **role Whitelist** mới lấy được mã để bảo lãnh bạn bè.\n\n"
+        f"### {EMOJI_GUARANTOR} 3. Nhập mã bảo lãnh\n"
+        "> Nhập mã và chờ staff duyệt yêu cầu bảo lãnh trước khi nộp đơn.\n\n"
+        f"### {EMOJI_APPLY} 4. Nộp đơn\n"
         "> Điền đúng thông tin và trả lời câu hỏi Roleplay trong form.\n\n"
-        f"### {EMOJI_GUARANTOR} Mã bảo lãnh\n"
-        "> Có mã từ bạn bè thì nhập trước khi nộp. Không có mã vẫn đăng ký bình thường.\n\n"
         f"### {EMOJI_NOTE} Lưu ý\n"
         "> Thông tin sai hoặc spam form có thể bị từ chối.\n\n"
         f"-# {SETTINGS.server_name} • WHITELIST SYSTEM"
@@ -186,6 +197,52 @@ def build_review_result(application: dict[str, Any]) -> str | None:
     return result
 
 
+def guarantor_review_colour(status: str) -> int:
+    return {
+        "pending": SETTINGS.accent_colour,
+        "accepted": 0x57F287,
+        "rejected": 0xED4245,
+        "error": 0xFEE75C,
+    }.get(status, SETTINGS.accent_colour)
+
+
+def build_guarantor_review_header(request: dict[str, Any]) -> str:
+    status = str(request["status"])
+    return (
+        f"## {EMOJI_GET_GUARANTOR} DUYỆT BẢO LÃNH `#{request['id']:04d}`\n"
+        f"**Người được bảo lãnh:** <@{request['applicant_user_id']}>\n"
+        f"-# @{trim(str(request['applicant_username']), 80)} • "
+        f"{GUARANTOR_STATUS_LABELS.get(status, status)} • "
+        f"{discord_timestamp(request.get('requested_at'), 'R')}"
+    )
+
+
+def build_guarantor_review_body(request: dict[str, Any]) -> str:
+    return (
+        f"### {EMOJI_GUARANTOR} THÔNG TIN BẢO LÃNH\n"
+        f"**Người bảo lãnh:** <@{request['owner_user_id']}>\n"
+        f"**Người được bảo lãnh:** <@{request['applicant_user_id']}>\n"
+        f"**Mã sử dụng:** `{request['code']}`\n"
+        f"**Gửi lúc:** {discord_timestamp(request.get('requested_at'))}"
+    )
+
+
+def build_guarantor_review_result(request: dict[str, Any]) -> str | None:
+    status = str(request["status"])
+    if status not in {"accepted", "rejected"}:
+        return None
+
+    text = (
+        "### ✨ KẾT QUẢ DUYỆT BẢO LÃNH\n"
+        f"**Trạng thái:** {GUARANTOR_STATUS_LABELS[status]}\n"
+        f"**Người duyệt:** <@{request.get('reviewer_id')}>\n"
+        f"**Thời gian:** {discord_timestamp(request.get('reviewed_at'))}"
+    )
+    if request.get("reason"):
+        text += f"\n**Lý do:** {trim(str(request['reason']), 650)}"
+    return text
+
+
 async def get_channel(channel_id: int) -> discord.abc.Messageable | None:
     channel = bot.get_channel(channel_id)
     if channel is not None:
@@ -229,6 +286,223 @@ async def send_log(guild: discord.Guild, application: dict[str, Any]) -> None:
         await channel.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
     except discord.HTTPException:
         log.exception("Không gửi được whitelist log trong %s", guild.id)
+
+
+async def send_guarantor_code_log(
+    guild: discord.Guild,
+    owner: discord.Member,
+    code: dict[str, Any],
+    *,
+    reused: bool,
+) -> None:
+    channel_id = (
+        SETTINGS.guarantor_log_channel_id
+        or SETTINGS.log_channel_id
+        or SETTINGS.review_channel_id
+    )
+    channel = await get_channel(channel_id)
+    if channel is None:
+        return
+
+    maximum = "∞" if int(code["max_uses"]) == 0 else str(code["max_uses"])
+    embed = discord.Embed(
+        title="Mã bảo lãnh đã được lấy" if not reused else "Mã bảo lãnh được xem lại",
+        description=(
+            f"**Người lấy mã:** {owner.mention}\n"
+            f"**User ID:** `{owner.id}`\n"
+            f"**Mã:** `{code['code']}`\n"
+            f"**Lượt dùng:** {code['use_count']}/{maximum}"
+        ),
+        colour=SETTINGS.accent_colour,
+        timestamp=utc_now(),
+    )
+    embed.set_thumbnail(url=owner.display_avatar.url)
+    embed.set_footer(text=f"{SETTINGS.server_name} • GUARANTOR LOG")
+    try:
+        await channel.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
+    except discord.HTTPException:
+        log.exception("Không gửi được log lấy mã bảo lãnh trong %s", guild.id)
+
+
+async def send_guarantor_result_log(
+    guild: discord.Guild,
+    request: dict[str, Any],
+) -> None:
+    channel_id = SETTINGS.guarantor_log_channel_id or SETTINGS.log_channel_id
+    if not channel_id:
+        return
+    channel = await get_channel(channel_id)
+    if channel is None:
+        return
+
+    status = str(request["status"])
+    embed = discord.Embed(
+        title="Yêu cầu bảo lãnh đã được xử lý",
+        description=(
+            f"**Người bảo lãnh:** <@{request['owner_user_id']}>\n"
+            f"**Người được bảo lãnh:** <@{request['applicant_user_id']}>\n"
+            f"**Mã:** `{request['code']}`\n"
+            f"**Kết quả:** {GUARANTOR_STATUS_LABELS.get(status, status)}\n"
+            f"**Người duyệt:** <@{request.get('reviewer_id')}>"
+        ),
+        colour=0x57F287 if status == "accepted" else 0xED4245,
+        timestamp=utc_now(),
+    )
+    if request.get("reason"):
+        embed.add_field(name="Lý do", value=trim(str(request["reason"]), 1000), inline=False)
+    try:
+        await channel.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
+    except discord.HTTPException:
+        log.exception("Không gửi được log duyệt bảo lãnh trong %s", guild.id)
+
+
+async def notify_guarantor_parties(
+    applicant: discord.Member | None,
+    owner: discord.Member | None,
+    request: dict[str, Any],
+) -> None:
+    status = str(request["status"])
+    accepted = status == "accepted"
+    title = "✅ Bảo lãnh đã được đồng ý" if accepted else "❌ Bảo lãnh đã bị từ chối"
+    colour = 0x57F287 if accepted else 0xED4245
+
+    if applicant is not None:
+        description = (
+            f"Yêu cầu bảo lãnh bằng mã `{request['code']}` tại **{SETTINGS.server_name}** "
+            + (
+                "đã được duyệt. Bạn có thể tiếp tục nộp đơn Whitelist."
+                if accepted
+                else "đã bị từ chối. Bạn vẫn có thể nộp đơn không dùng bảo lãnh hoặc nhập mã khác."
+            )
+        )
+        embed = discord.Embed(title=title, description=description, colour=colour)
+        if request.get("reason"):
+            embed.add_field(name="Lý do", value=trim(str(request["reason"]), 1000), inline=False)
+        try:
+            await applicant.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            log.info("Không DM được kết quả bảo lãnh cho %s", applicant.id)
+
+    if owner is not None:
+        description = (
+            f"Yêu cầu dùng mã `{request['code']}` của bạn cho <@{request['applicant_user_id']}> "
+            + ("đã được staff đồng ý." if accepted else "đã bị staff từ chối.")
+        )
+        embed = discord.Embed(title=title, description=description, colour=colour)
+        if request.get("reason"):
+            embed.add_field(name="Lý do", value=trim(str(request["reason"]), 1000), inline=False)
+        try:
+            await owner.send(embed=embed, allowed_mentions=ALLOWED_MENTIONS)
+        except (discord.Forbidden, discord.HTTPException):
+            log.info("Không DM được kết quả bảo lãnh cho chủ mã %s", owner.id)
+
+
+async def issue_self_service_guarantor_code(
+    guild: discord.Guild,
+    member: discord.Member,
+) -> tuple[bool, str]:
+    existing = await asyncio.to_thread(
+        DB.get_available_guarantor_code,
+        guild.id,
+        member.id,
+    )
+    reused = existing is not None
+    code_row = existing
+
+    if code_row is None:
+        for _ in range(5):
+            code = generate_code()
+            try:
+                await asyncio.to_thread(
+                    DB.create_guarantor_code,
+                    code=code,
+                    guild_id=guild.id,
+                    owner_user_id=member.id,
+                    created_by=member.id,
+                    max_uses=SETTINGS.self_service_code_max_uses,
+                )
+                code_row = await asyncio.to_thread(
+                    DB.get_available_guarantor_code,
+                    guild.id,
+                    member.id,
+                )
+                break
+            except sqlite3.IntegrityError:
+                continue
+        if code_row is None:
+            return False, "Không tạo được mã bảo lãnh. Hãy thử lại sau."
+
+    await send_guarantor_code_log(guild, member, code_row, reused=reused)
+    maximum = "không giới hạn" if int(code_row["max_uses"]) == 0 else str(code_row["max_uses"])
+    return (
+        True,
+        f"Mã bảo lãnh của bạn: `{code_row['code']}`\n"
+        f"Lượt tối đa: **{maximum}**. Chỉ gửi mã cho người bạn thật sự bảo lãnh.",
+    )
+
+
+async def submit_guarantor_request(
+    interaction: discord.Interaction,
+    code: str,
+) -> str:
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return "❌ Chỉ có thể dùng trong server."
+
+    guild = interaction.guild
+    member = interaction.user
+    whitelist_role = guild.get_role(SETTINGS.whitelist_role_id)
+    if whitelist_role and whitelist_role in member.roles:
+        return "❌ Bạn đã có role Whitelist nên không cần dùng mã bảo lãnh."
+
+    ok, message, request_id, owner_user_id = await asyncio.to_thread(
+        DB.create_guarantor_request,
+        guild_id=guild.id,
+        applicant_user_id=member.id,
+        applicant_username=member.name,
+        applicant_display_name=member.display_name,
+        applicant_avatar_url=member.display_avatar.url,
+        code=code,
+    )
+    if not ok or request_id is None:
+        return f"❌ {message}"
+
+    request = await asyncio.to_thread(DB.get_guarantor_request_by_id, request_id)
+    if request is None:
+        return "❌ Không đọc lại được yêu cầu bảo lãnh vừa tạo."
+
+    review_channel = await get_channel(SETTINGS.review_channel_id)
+    if review_channel is None:
+        await asyncio.to_thread(
+            DB.mark_guarantor_request_error,
+            request_id,
+            "Không truy cập được kênh xét duyệt.",
+        )
+        return "❌ Bot không truy cập được kênh staff xét duyệt."
+
+    try:
+        review_message = await review_channel.send(
+            view=GuarantorReviewLayout(request),
+            allowed_mentions=ALLOWED_MENTIONS,
+        )
+        await asyncio.to_thread(
+            DB.attach_guarantor_review_message,
+            request_id,
+            review_message.channel.id,
+            review_message.id,
+        )
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        log.exception("Không gửi được yêu cầu bảo lãnh #%s", request_id)
+        await asyncio.to_thread(
+            DB.mark_guarantor_request_error,
+            request_id,
+            f"Discord API: {type(exc).__name__}",
+        )
+        return "❌ Không gửi được yêu cầu bảo lãnh sang kênh staff."
+
+    return (
+        f"✅ Đã gửi yêu cầu bảo lãnh **#{request_id:04d}** cho staff duyệt. "
+        "Sau khi được đồng ý, bạn mới nộp đơn Whitelist có bảo lãnh."
+    )
 
 
 async def notify_applicant(member: discord.Member | None, application: dict[str, Any]) -> None:
@@ -288,6 +562,17 @@ async def submit_application(
     verified_at = await asyncio.to_thread(DB.get_verification, guild.id, member.id)
     if SETTINGS.require_verification and not verified_at:
         return "❌ Bạn cần bấm **Xác thực tài khoản** trước khi nộp đơn."
+
+    pending_guarantor = await asyncio.to_thread(
+        DB.get_pending_guarantor_request,
+        guild.id,
+        member.id,
+    )
+    if pending_guarantor:
+        return (
+            f"⏳ Yêu cầu bảo lãnh **#{pending_guarantor['id']:04d}** đang chờ staff duyệt. "
+            "Hãy chờ kết quả rồi nộp đơn."
+        )
 
     referral = await asyncio.to_thread(DB.get_referral, guild.id, member.id)
     ok, message, application_id = await asyncio.to_thread(
@@ -439,6 +724,81 @@ async def process_decision(
         )
 
 
+async def process_guarantor_decision(
+    interaction: discord.Interaction,
+    *,
+    status: str,
+    reason: str | None,
+) -> str:
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return "❌ Thao tác này chỉ dùng trong server."
+    if interaction.message is None:
+        return "❌ Không tìm thấy tin nhắn yêu cầu bảo lãnh."
+    if not is_reviewer(interaction.user):
+        return "❌ Bạn không có quyền xét duyệt bảo lãnh."
+
+    async with GUARANTOR_REVIEW_LOCK:
+        request = await asyncio.to_thread(
+            DB.get_guarantor_request_by_message,
+            interaction.guild.id,
+            interaction.message.id,
+        )
+        if request is None:
+            return "❌ Không tìm thấy dữ liệu yêu cầu bảo lãnh này."
+        if request["status"] != "pending":
+            return (
+                "ℹ️ Yêu cầu này đã được xử lý: "
+                f"**{GUARANTOR_STATUS_LABELS.get(request['status'], request['status'])}**."
+            )
+
+        finalized, message = await asyncio.to_thread(
+            DB.finalize_guarantor_request,
+            request_id=int(request["id"]),
+            status=status,
+            reviewer_id=interaction.user.id,
+            reason=reason,
+        )
+        if not finalized:
+            return f"❌ {message}"
+
+        updated = await asyncio.to_thread(
+            DB.get_guarantor_request_by_id,
+            int(request["id"]),
+        )
+        if updated is None:
+            return "✅ Đã xử lý bảo lãnh nhưng không đọc lại được dữ liệu."
+
+        try:
+            await interaction.message.edit(
+                content=None,
+                embeds=[],
+                attachments=[],
+                view=GuarantorReviewLayout(updated, disabled=True),
+            )
+        except discord.HTTPException:
+            log.exception(
+                "Không cập nhật được guarantor review message %s",
+                interaction.message.id,
+            )
+
+        applicant = await fetch_member(
+            interaction.guild,
+            int(updated["applicant_user_id"]),
+        )
+        owner = await fetch_member(
+            interaction.guild,
+            int(updated["owner_user_id"]),
+        )
+        await notify_guarantor_parties(applicant, owner, updated)
+        await send_guarantor_result_log(interaction.guild, updated)
+
+        return (
+            f"✅ Đã **đồng ý** bảo lãnh #{updated['id']:04d}."
+            if status == "accepted"
+            else f"✅ Đã **từ chối** bảo lãnh #{updated['id']:04d}."
+        )
+
+
 class ApplicationModal(discord.ui.Modal):
     def __init__(self) -> None:
         super().__init__(title="Đăng ký Whitelist", timeout=600)
@@ -501,20 +861,12 @@ class GuarantorCodeModal(discord.ui.Modal, title="Nhập mã bảo lãnh"):
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
-        ok, message, owner_user_id = await asyncio.to_thread(
-            DB.apply_guarantor_code,
-            guild_id=interaction.guild.id,
-            user_id=interaction.user.id,
-            code=normalized,
+        result = await submit_guarantor_request(interaction, normalized)
+        await interaction.followup.send(
+            result,
+            ephemeral=True,
+            allowed_mentions=ALLOWED_MENTIONS,
         )
-        if ok:
-            await interaction.followup.send(
-                f"✅ {message} Người bảo lãnh: <@{owner_user_id}>",
-                ephemeral=True,
-                allowed_mentions=ALLOWED_MENTIONS,
-            )
-        else:
-            await interaction.followup.send(f"❌ {message}", ephemeral=True)
 
 
 class ReasonModal(discord.ui.Modal):
@@ -534,6 +886,30 @@ class ReasonModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         result = await process_decision(
+            interaction,
+            status=self.status,
+            reason=str(self.reason.value).strip(),
+        )
+        await interaction.followup.send(result, ephemeral=True)
+
+
+class GuarantorReasonModal(discord.ui.Modal):
+    def __init__(self, status: str) -> None:
+        title = "Đồng ý bảo lãnh + lý do" if status == "accepted" else "Từ chối bảo lãnh + lý do"
+        super().__init__(title=title, timeout=300)
+        self.status = status
+        self.reason = discord.ui.TextInput(
+            label="Lý do",
+            placeholder="Nhập nội dung gửi cho hai bên",
+            style=discord.TextStyle.paragraph,
+            min_length=3,
+            max_length=1000,
+        )
+        self.add_item(self.reason)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        result = await process_guarantor_decision(
             interaction,
             status=self.status,
             reason=str(self.reason.value).strip(),
@@ -569,48 +945,43 @@ class WhitelistActionRow(discord.ui.ActionRow):
         )
 
     @discord.ui.button(
-        label="Đăng ký",
-        emoji=EMOJI_APPLY,
-        style=discord.ButtonStyle.primary,
-        custom_id="venus_whitelist_apply",
+        label="Lấy mã bảo lãnh",
+        emoji=EMOJI_GET_GUARANTOR,
+        style=discord.ButtonStyle.secondary,
+        custom_id="venus_whitelist_get_guarantor",
     )
-    async def apply(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    async def get_guarantor_code(
+        self,
+        interaction: discord.Interaction,
+        _: discord.ui.Button,
+    ) -> None:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
             return
 
-        if SETTINGS.require_verification:
-            verified_at = await asyncio.to_thread(
-                DB.get_verification,
-                interaction.guild.id,
-                interaction.user.id,
+        whitelist_role = interaction.guild.get_role(SETTINGS.whitelist_role_id)
+        if whitelist_role is None:
+            await interaction.response.send_message(
+                "❌ Server chưa cấu hình đúng role Whitelist.",
+                ephemeral=True,
             )
-            if not verified_at:
-                await interaction.response.send_message(
-                    "❌ Hãy bấm **Xác thực tài khoản** trước.",
-                    ephemeral=True,
-                )
-                return
+            return
+        if whitelist_role not in interaction.user.roles:
+            await interaction.response.send_message(
+                "❌ Chỉ thành viên **đã được Whitelist** mới lấy được mã bảo lãnh.",
+                ephemeral=True,
+            )
+            return
 
-        latest = await asyncio.to_thread(
-            DB.get_latest_application,
-            interaction.guild.id,
-            interaction.user.id,
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        ok, message = await issue_self_service_guarantor_code(
+            interaction.guild,
+            interaction.user,
         )
-        if latest and latest["status"] == "pending":
-            await interaction.response.send_message(
-                "⏳ Bạn đang có một đơn chờ duyệt.",
-                ephemeral=True,
-            )
-            return
-        if latest and latest["status"] == "accepted":
-            await interaction.response.send_message(
-                "✅ Bạn đã được whitelist rồi.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.send_modal(ApplicationModal())
+        await interaction.followup.send(
+            f"{'✅' if ok else '❌'} {message}",
+            ephemeral=True,
+        )
 
     @discord.ui.button(
         label="Nhập mã bảo lãnh",
@@ -635,6 +1006,62 @@ class WhitelistActionRow(discord.ui.ActionRow):
                 )
                 return
         await interaction.response.send_modal(GuarantorCodeModal())
+
+    @discord.ui.button(
+        label="Đăng ký",
+        emoji=EMOJI_APPLY,
+        style=discord.ButtonStyle.primary,
+        custom_id="venus_whitelist_apply",
+    )
+    async def apply(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+            return
+
+        if SETTINGS.require_verification:
+            verified_at = await asyncio.to_thread(
+                DB.get_verification,
+                interaction.guild.id,
+                interaction.user.id,
+            )
+            if not verified_at:
+                await interaction.response.send_message(
+                    "❌ Hãy bấm **Xác thực tài khoản** trước.",
+                    ephemeral=True,
+                )
+                return
+
+        pending_guarantor = await asyncio.to_thread(
+            DB.get_pending_guarantor_request,
+            interaction.guild.id,
+            interaction.user.id,
+        )
+        if pending_guarantor:
+            await interaction.response.send_message(
+                f"⏳ Yêu cầu bảo lãnh **#{pending_guarantor['id']:04d}** đang chờ staff duyệt.",
+                ephemeral=True,
+            )
+            return
+
+        latest = await asyncio.to_thread(
+            DB.get_latest_application,
+            interaction.guild.id,
+            interaction.user.id,
+        )
+        if latest and latest["status"] == "pending":
+            await interaction.response.send_message(
+                "⏳ Bạn đang có một đơn chờ duyệt.",
+                ephemeral=True,
+            )
+            return
+        if latest and latest["status"] == "accepted":
+            await interaction.response.send_message(
+                "✅ Bạn đã được whitelist rồi.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(ApplicationModal())
 
 
 class ReviewActionRow(discord.ui.ActionRow):
@@ -690,6 +1117,83 @@ class ReviewActionRow(discord.ui.ActionRow):
             await interaction.response.send_message("❌ Bạn không có quyền xét duyệt.", ephemeral=True)
             return
         await interaction.response.send_modal(ReasonModal("rejected"))
+
+
+class GuarantorReviewActionRow(discord.ui.ActionRow):
+    def __init__(self, *, disabled: bool = False) -> None:
+        super().__init__()
+        if disabled:
+            for child in self.children:
+                if isinstance(child, discord.ui.Button):
+                    child.disabled = True
+
+    @discord.ui.button(
+        label="Đồng ý bảo lãnh",
+        emoji="✅",
+        style=discord.ButtonStyle.success,
+        custom_id="venus_guarantor_review_accept",
+    )
+    async def accept(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        result = await process_guarantor_decision(
+            interaction,
+            status="accepted",
+            reason=None,
+        )
+        await interaction.followup.send(result, ephemeral=True)
+
+    @discord.ui.button(
+        label="Từ chối bảo lãnh",
+        emoji="❌",
+        style=discord.ButtonStyle.danger,
+        custom_id="venus_guarantor_review_reject",
+    )
+    async def reject(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        result = await process_guarantor_decision(
+            interaction,
+            status="rejected",
+            reason=None,
+        )
+        await interaction.followup.send(result, ephemeral=True)
+
+    @discord.ui.button(
+        label="Đồng ý + lý do",
+        emoji="📝",
+        style=discord.ButtonStyle.primary,
+        custom_id="venus_guarantor_review_accept_reason",
+    )
+    async def accept_reason(
+        self,
+        interaction: discord.Interaction,
+        _: discord.ui.Button,
+    ) -> None:
+        if not isinstance(interaction.user, discord.Member) or not is_reviewer(interaction.user):
+            await interaction.response.send_message(
+                "❌ Bạn không có quyền xét duyệt.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(GuarantorReasonModal("accepted"))
+
+    @discord.ui.button(
+        label="Từ chối + lý do",
+        emoji="💬",
+        style=discord.ButtonStyle.secondary,
+        custom_id="venus_guarantor_review_reject_reason",
+    )
+    async def reject_reason(
+        self,
+        interaction: discord.Interaction,
+        _: discord.ui.Button,
+    ) -> None:
+        if not isinstance(interaction.user, discord.Member) or not is_reviewer(interaction.user):
+            await interaction.response.send_message(
+                "❌ Bạn không có quyền xét duyệt.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(GuarantorReasonModal("rejected"))
 
 
 class WhitelistPanelLayout(discord.ui.LayoutView):
@@ -761,11 +1265,62 @@ class ReviewLayout(discord.ui.LayoutView):
         self.add_item(container)
 
 
+class GuarantorReviewLayout(discord.ui.LayoutView):
+    def __init__(
+        self,
+        request: dict[str, Any] | None = None,
+        *,
+        disabled: bool = False,
+    ) -> None:
+        super().__init__(timeout=None)
+        status = str(request["status"]) if request else "pending"
+        container = discord.ui.Container(accent_colour=guarantor_review_colour(status))
+
+        if request:
+            avatar_url = request.get("applicant_avatar_url")
+            if avatar_url:
+                container.add_item(
+                    discord.ui.Section(
+                        discord.ui.TextDisplay(build_guarantor_review_header(request)),
+                        accessory=discord.ui.Thumbnail(
+                            avatar_url,
+                            description=(
+                                "Avatar của "
+                                f"{request.get('applicant_display_name') or request.get('applicant_username')}"
+                            ),
+                        ),
+                    )
+                )
+            else:
+                container.add_item(
+                    discord.ui.TextDisplay(build_guarantor_review_header(request))
+                )
+
+            container.add_item(discord.ui.Separator())
+            container.add_item(discord.ui.TextDisplay(build_guarantor_review_body(request)))
+
+            result_text = build_guarantor_review_result(request)
+            if result_text:
+                container.add_item(discord.ui.Separator())
+                container.add_item(discord.ui.TextDisplay(result_text))
+        else:
+            container.add_item(
+                discord.ui.TextDisplay(
+                    f"## {EMOJI_GET_GUARANTOR} VENUS GUARANTOR REVIEW"
+                )
+            )
+
+        container.add_item(discord.ui.Separator())
+        container.add_item(GuarantorReviewActionRow(disabled=disabled))
+        self.add_item(container)
+
+
 class VenusWhitelistBot(commands.Bot):
     async def setup_hook(self) -> None:
         await asyncio.to_thread(DB.initialize)
         self.add_view(WhitelistPanelLayout())
         self.add_view(ReviewLayout())
+        self.add_view(GuarantorReviewLayout())
 
         try:
             if SETTINGS.test_guild_id:
@@ -858,12 +1413,27 @@ async def whitelist_status(interaction: discord.Interaction) -> None:
         interaction.guild.id,
         interaction.user.id,
     )
+    guarantor_request = await asyncio.to_thread(
+        DB.get_latest_guarantor_request,
+        interaction.guild.id,
+        interaction.user.id,
+    )
 
     lines = [f"**Xác thực:** {'✅ Có' if verified_at else '❌ Chưa'}"]
     if referral:
         lines.append(f"**Mã bảo lãnh:** `{referral['code']}` • <@{referral['owner_user_id']}>")
     else:
         lines.append("**Mã bảo lãnh:** Không sử dụng")
+
+    if guarantor_request:
+        lines.append(
+            f"**Duyệt bảo lãnh:** `#{guarantor_request['id']:04d}` • "
+            f"{GUARANTOR_STATUS_LABELS.get(guarantor_request['status'], guarantor_request['status'])}"
+        )
+        if guarantor_request.get("reason"):
+            lines.append(
+                f"**Lý do bảo lãnh:** {trim(str(guarantor_request['reason']), 600)}"
+            )
 
     if application:
         lines.append(

@@ -62,6 +62,8 @@ class Settings:
     reviewer_role_id: int | None
     unverified_role_id: int | None
     log_channel_id: int | None
+    guarantor_log_channel_id: int | None
+    self_service_code_max_uses: int
     server_name: str
     timezone_name: str
     timezone: ZoneInfo
@@ -163,6 +165,10 @@ def load_settings() -> Settings:
         reviewer_role_id=env_int("WHITELIST_REVIEWER_ROLE_ID"),
         unverified_role_id=env_int("UNVERIFIED_ROLE_ID"),
         log_channel_id=env_int("WHITELIST_LOG_CHANNEL_ID"),
+        guarantor_log_channel_id=env_int("GUARANTOR_LOG_CHANNEL_ID"),
+        self_service_code_max_uses=max(
+            1, env_int("GUARANTOR_SELF_MAX_USES", 1) or 1
+        ),
         server_name=os.getenv("SERVER_NAME", "VENUS WORLD").strip() or "VENUS WORLD",
         timezone_name=timezone_name,
         timezone=timezone,

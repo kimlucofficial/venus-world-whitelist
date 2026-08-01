@@ -60,6 +60,25 @@ class Database:
                     FOREIGN KEY (code) REFERENCES guarantor_codes(code)
                 );
 
+                CREATE TABLE IF NOT EXISTS guarantor_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    applicant_user_id INTEGER NOT NULL,
+                    applicant_username TEXT NOT NULL,
+                    applicant_display_name TEXT NOT NULL,
+                    applicant_avatar_url TEXT,
+                    code TEXT NOT NULL,
+                    owner_user_id INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    review_channel_id INTEGER,
+                    review_message_id INTEGER UNIQUE,
+                    requested_at TEXT NOT NULL,
+                    reviewed_at TEXT,
+                    reviewer_id INTEGER,
+                    reason TEXT,
+                    FOREIGN KEY (code) REFERENCES guarantor_codes(code)
+                );
+
                 CREATE TABLE IF NOT EXISTS applications (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     guild_id INTEGER NOT NULL,
@@ -82,6 +101,10 @@ class Database:
                     reason TEXT
                 );
 
+                CREATE INDEX IF NOT EXISTS idx_guarantor_requests_user
+                    ON guarantor_requests(guild_id, applicant_user_id, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_guarantor_requests_review_message
+                    ON guarantor_requests(guild_id, review_message_id);
                 CREATE INDEX IF NOT EXISTS idx_applications_user
                     ON applications(guild_id, user_id, id DESC);
                 CREATE INDEX IF NOT EXISTS idx_applications_review_message
@@ -163,6 +186,26 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_available_guarantor_code(
+        self,
+        guild_id: int,
+        owner_user_id: int,
+    ) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM guarantor_codes
+                WHERE guild_id = ?
+                  AND owner_user_id = ?
+                  AND active = 1
+                  AND (max_uses = 0 OR use_count < max_uses)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (guild_id, owner_user_id),
+            ).fetchone()
+        return dict(row) if row else None
+
     def apply_guarantor_code(
         self,
         *,
@@ -223,6 +266,269 @@ class Database:
                 (guild_id, user_id),
             ).fetchone()
         return dict(row) if row else None
+
+    def create_guarantor_request(
+        self,
+        *,
+        guild_id: int,
+        applicant_user_id: int,
+        applicant_username: str,
+        applicant_display_name: str,
+        applicant_avatar_url: str | None,
+        code: str,
+    ) -> tuple[bool, str, int | None, int | None]:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+
+            referral = connection.execute(
+                "SELECT code, owner_user_id FROM referrals WHERE guild_id = ? AND user_id = ?",
+                (guild_id, applicant_user_id),
+            ).fetchone()
+            if referral:
+                return (
+                    False,
+                    f"Bạn đã có bảo lãnh bằng mã `{referral['code']}`.",
+                    None,
+                    int(referral["owner_user_id"]),
+                )
+
+            pending = connection.execute(
+                """
+                SELECT id, code, owner_user_id FROM guarantor_requests
+                WHERE guild_id = ? AND applicant_user_id = ? AND status = 'pending'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (guild_id, applicant_user_id),
+            ).fetchone()
+            if pending:
+                return (
+                    False,
+                    f"Bạn đang có yêu cầu bảo lãnh `#{int(pending['id']):04d}` chờ staff duyệt.",
+                    int(pending["id"]),
+                    int(pending["owner_user_id"]),
+                )
+
+            row = connection.execute(
+                """
+                SELECT * FROM guarantor_codes
+                WHERE guild_id = ? AND code = ? AND active = 1
+                """,
+                (guild_id, code),
+            ).fetchone()
+            if not row:
+                return False, "Mã bảo lãnh không tồn tại hoặc đã bị tắt.", None, None
+
+            owner_user_id = int(row["owner_user_id"])
+            if owner_user_id == applicant_user_id:
+                return False, "Bạn không thể dùng mã bảo lãnh của chính mình.", None, None
+
+            max_uses = int(row["max_uses"])
+            use_count = int(row["use_count"])
+            if max_uses > 0 and use_count >= max_uses:
+                return False, "Mã bảo lãnh đã hết lượt sử dụng.", None, owner_user_id
+
+            if max_uses > 0:
+                pending_count = int(
+                    connection.execute(
+                        """
+                        SELECT COUNT(*) AS total FROM guarantor_requests
+                        WHERE guild_id = ? AND code = ? AND status = 'pending'
+                        """,
+                        (guild_id, code),
+                    ).fetchone()["total"]
+                )
+                if use_count + pending_count >= max_uses:
+                    return (
+                        False,
+                        "Mã này đang có yêu cầu khác chờ staff duyệt hoặc đã hết lượt.",
+                        None,
+                        owner_user_id,
+                    )
+
+            cursor = connection.execute(
+                """
+                INSERT INTO guarantor_requests(
+                    guild_id, applicant_user_id, applicant_username,
+                    applicant_display_name, applicant_avatar_url, code,
+                    owner_user_id, status, requested_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                """,
+                (
+                    guild_id,
+                    applicant_user_id,
+                    applicant_username,
+                    applicant_display_name,
+                    applicant_avatar_url,
+                    code,
+                    owner_user_id,
+                    self.utc_now(),
+                ),
+            )
+            return True, "Đã tạo yêu cầu bảo lãnh.", int(cursor.lastrowid), owner_user_id
+
+    def attach_guarantor_review_message(
+        self,
+        request_id: int,
+        channel_id: int,
+        message_id: int,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE guarantor_requests
+                SET review_channel_id = ?, review_message_id = ?
+                WHERE id = ?
+                """,
+                (channel_id, message_id, request_id),
+            )
+
+    def mark_guarantor_request_error(self, request_id: int, reason: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE guarantor_requests
+                SET status = 'error', reason = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (reason[:1000], request_id),
+            )
+
+    def get_guarantor_request_by_id(self, request_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM guarantor_requests WHERE id = ?",
+                (request_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_guarantor_request_by_message(
+        self,
+        guild_id: int,
+        message_id: int,
+    ) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM guarantor_requests
+                WHERE guild_id = ? AND review_message_id = ?
+                """,
+                (guild_id, message_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_latest_guarantor_request(
+        self,
+        guild_id: int,
+        applicant_user_id: int,
+    ) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM guarantor_requests
+                WHERE guild_id = ? AND applicant_user_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (guild_id, applicant_user_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_pending_guarantor_request(
+        self,
+        guild_id: int,
+        applicant_user_id: int,
+    ) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM guarantor_requests
+                WHERE guild_id = ? AND applicant_user_id = ? AND status = 'pending'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (guild_id, applicant_user_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def finalize_guarantor_request(
+        self,
+        *,
+        request_id: int,
+        status: str,
+        reviewer_id: int,
+        reason: str | None,
+    ) -> tuple[bool, str]:
+        if status not in {"accepted", "rejected"}:
+            return False, "Trạng thái xử lý không hợp lệ."
+
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            request = connection.execute(
+                "SELECT * FROM guarantor_requests WHERE id = ?",
+                (request_id,),
+            ).fetchone()
+            if not request:
+                return False, "Không tìm thấy yêu cầu bảo lãnh."
+            if request["status"] != "pending":
+                return False, "Yêu cầu này đã được xử lý trước đó."
+
+            if status == "accepted":
+                code_row = connection.execute(
+                    """
+                    SELECT * FROM guarantor_codes
+                    WHERE guild_id = ? AND code = ? AND active = 1
+                    """,
+                    (int(request["guild_id"]), str(request["code"])),
+                ).fetchone()
+                if not code_row:
+                    return False, "Mã bảo lãnh đã bị tắt hoặc không còn tồn tại."
+
+                max_uses = int(code_row["max_uses"])
+                use_count = int(code_row["use_count"])
+                if max_uses > 0 and use_count >= max_uses:
+                    return False, "Mã bảo lãnh đã hết lượt sử dụng."
+
+                existing = connection.execute(
+                    "SELECT code FROM referrals WHERE guild_id = ? AND user_id = ?",
+                    (int(request["guild_id"]), int(request["applicant_user_id"])),
+                ).fetchone()
+                if existing:
+                    return False, f"Người này đã có bảo lãnh bằng mã `{existing['code']}`."
+
+                connection.execute(
+                    """
+                    INSERT INTO referrals(guild_id, user_id, code, owner_user_id, used_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(request["guild_id"]),
+                        int(request["applicant_user_id"]),
+                        str(request["code"]),
+                        int(request["owner_user_id"]),
+                        self.utc_now(),
+                    ),
+                )
+                connection.execute(
+                    "UPDATE guarantor_codes SET use_count = use_count + 1 WHERE code = ?",
+                    (str(request["code"]),),
+                )
+
+            cursor = connection.execute(
+                """
+                UPDATE guarantor_requests
+                SET status = ?, reviewed_at = ?, reviewer_id = ?, reason = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (
+                    status,
+                    self.utc_now(),
+                    reviewer_id,
+                    reason[:1000] if reason else None,
+                    request_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("Không thể cập nhật trạng thái yêu cầu bảo lãnh.")
+
+        return True, "Đã đồng ý bảo lãnh." if status == "accepted" else "Đã từ chối bảo lãnh."
 
     def create_application(
         self,
@@ -371,6 +677,10 @@ class Database:
         with self.connect() as connection:
             connection.execute(
                 "DELETE FROM applications WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            )
+            connection.execute(
+                "DELETE FROM guarantor_requests WHERE guild_id = ? AND applicant_user_id = ?",
                 (guild_id, user_id),
             )
             referral = connection.execute(

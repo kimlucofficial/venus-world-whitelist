@@ -29,6 +29,13 @@ log = logging.getLogger("venus-whitelist")
 ALLOWED_MENTIONS = discord.AllowedMentions.none()
 REVIEW_LOCK = asyncio.Lock()
 CODE_PATTERN = re.compile(r"^[A-Z0-9-]{4,20}$")
+
+EMOJI_WHITELIST = "<:96359bubbleheart:1532387513031721101>"
+EMOJI_WELCOME = "<a:fwb_cloudfly:1532586588658204724>"
+EMOJI_VERIFY = "<a:SaF_Bluerollingstar:1532586674952081519>"
+EMOJI_APPLY = "<:emoji_71:1533137766228168754>"
+EMOJI_GUARANTOR = "<a:65447kuromi:1532351473889841293>"
+EMOJI_NOTE = "<:2039bubblequestion:1532386833764319374>"
 STATUS_LABELS = {
     "pending": "⏳ Đang chờ duyệt",
     "accepted": "✅ Đã đồng ý",
@@ -74,15 +81,15 @@ def is_reviewer(member: discord.Member) -> bool:
 
 def build_panel_text(guild_name: str) -> str:
     return (
-        "## 🎟️ ĐĂNG KÝ WHITELIST\n"
-        f"✨ Chào mừng bạn đến với **{guild_name}**. Hoàn thành các bước bên dưới để gửi hồ sơ.\n\n"
-        "### 🔗 1. Xác thực tài khoản\n"
+        f"## {EMOJI_WHITELIST} ĐĂNG KÝ WHITELIST\n"
+        f"{EMOJI_WELCOME} Chào mừng bạn đến với **{guild_name}**. Hoàn thành các bước bên dưới để gửi hồ sơ.\n\n"
+        f"### {EMOJI_VERIFY} 1. Xác thực tài khoản\n"
         "> Bấm **Xác thực tài khoản** để hệ thống ghi nhận Discord của bạn.\n\n"
-        "### 💌 2. Nộp đơn\n"
+        f"### {EMOJI_APPLY} 2. Nộp đơn\n"
         "> Điền đúng thông tin và trả lời câu hỏi Roleplay trong form.\n\n"
-        "### 🔑 Mã bảo lãnh\n"
+        f"### {EMOJI_GUARANTOR} Mã bảo lãnh\n"
         "> Có mã từ bạn bè thì nhập trước khi nộp. Không có mã vẫn đăng ký bình thường.\n\n"
-        "### ⚠️ Lưu ý\n"
+        f"### {EMOJI_NOTE} Lưu ý\n"
         "> Thông tin sai hoặc spam form có thể bị từ chối.\n\n"
         f"-# {SETTINGS.server_name} • WHITELIST SYSTEM"
     )
@@ -537,7 +544,7 @@ class ReasonModal(discord.ui.Modal):
 class WhitelistActionRow(discord.ui.ActionRow):
     @discord.ui.button(
         label="Xác thực tài khoản",
-        emoji="🔗",
+        emoji=EMOJI_VERIFY,
         style=discord.ButtonStyle.secondary,
         custom_id="venus_whitelist_verify",
     )
@@ -563,7 +570,7 @@ class WhitelistActionRow(discord.ui.ActionRow):
 
     @discord.ui.button(
         label="Đăng ký",
-        emoji="💌",
+        emoji=EMOJI_APPLY,
         style=discord.ButtonStyle.primary,
         custom_id="venus_whitelist_apply",
     )
@@ -607,7 +614,7 @@ class WhitelistActionRow(discord.ui.ActionRow):
 
     @discord.ui.button(
         label="Nhập mã bảo lãnh",
-        emoji="🔑",
+        emoji=EMOJI_GUARANTOR,
         style=discord.ButtonStyle.success,
         custom_id="venus_whitelist_guarantor",
     )

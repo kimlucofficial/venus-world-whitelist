@@ -1,0 +1,47 @@
+[
+  {
+    "key": "full_name",
+    "label": "Họ và tên",
+    "placeholder": "Ghi đầy đủ họ tên thật",
+    "style": "short",
+    "required": true,
+    "min_length": 3,
+    "max_length": 100
+  },
+  {
+    "key": "gender",
+    "label": "Giới tính",
+    "placeholder": "Nam / Nữ / Khác",
+    "style": "short",
+    "required": true,
+    "min_length": 2,
+    "max_length": 30
+  },
+  {
+    "key": "age",
+    "label": "Tuổi",
+    "placeholder": "Tuổi thật của bạn",
+    "style": "short",
+    "required": true,
+    "min_length": 1,
+    "max_length": 3
+  },
+  {
+    "key": "steam_hex",
+    "label": "Steam Hex",
+    "placeholder": "Ví dụ: steam:11000010xxxxxxxx",
+    "style": "short",
+    "required": true,
+    "min_length": 8,
+    "max_length": 80
+  },
+  {
+    "key": "meta_gaming",
+    "label": "Meta Gaming là gì? Cho ví dụ ngắn",
+    "placeholder": "Giải thích ngắn gọn và đưa 1 ví dụ",
+    "style": "paragraph",
+    "required": true,
+    "min_length": 15,
+    "max_length": 700
+  }
+]

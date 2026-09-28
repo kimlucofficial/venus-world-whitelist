@@ -39,6 +39,15 @@ EMOJI_APPLY = "<:emoji_71:1533137766228168754>"
 EMOJI_GUARANTOR = "<a:65447kuromi:1532351473889841293>"
 EMOJI_GET_GUARANTOR = "<a:758151kuromithx:1532351505569419296>"
 EMOJI_NOTE = "<:2039bubblequestion:1532386833764319374>"
+EMOJI_FALLBACKS = {
+    EMOJI_WHITELIST: "💜",
+    EMOJI_WELCOME: "☁️",
+    EMOJI_VERIFY: "⭐",
+    EMOJI_APPLY: "📝",
+    EMOJI_GUARANTOR: "🎀",
+    EMOJI_GET_GUARANTOR: "🎟️",
+    EMOJI_NOTE: "❔",
+}
 STATUS_LABELS = {
     "pending": "⏳ Đang chờ duyệt",
     "accepted": "✅ Đã đồng ý",
@@ -51,6 +60,29 @@ GUARANTOR_STATUS_LABELS = {
     "rejected": "❌ Bảo lãnh bị từ chối",
     "error": "⚠️ Lỗi gửi yêu cầu",
 }
+
+
+def usable_emoji(
+    raw: str,
+    guild: discord.Guild | None = None,
+    permissions: discord.Permissions | None = None,
+) -> str:
+    """Return the custom emoji if the bot can really use it, otherwise a Unicode fallback."""
+    partial = discord.PartialEmoji.from_str(raw)
+    if partial.id is None:
+        return raw
+    fallback = EMOJI_FALLBACKS.get(raw, "💜")
+    custom = bot.get_emoji(partial.id)
+    if custom is None or not custom.available:
+        return fallback
+    if (
+        guild is not None
+        and permissions is not None
+        and custom.guild_id != guild.id
+        and not permissions.use_external_emojis
+    ):
+        return fallback
+    return raw
 
 
 def utc_now() -> datetime:
@@ -88,19 +120,26 @@ def is_reviewer(member: discord.Member) -> bool:
     return bool(role_id and any(role.id == role_id for role in member.roles))
 
 
-def build_panel_text(guild_name: str) -> str:
+def build_panel_text(
+    guild_name: str,
+    guild: discord.Guild | None = None,
+    permissions: discord.Permissions | None = None,
+) -> str:
+    def e(raw: str) -> str:
+        return usable_emoji(raw, guild, permissions)
+
     return (
-        f"## {EMOJI_WHITELIST} ĐĂNG KÝ WHITELIST\n"
-        f"{EMOJI_WELCOME} Chào mừng bạn đến với **{guild_name}**. Hoàn thành các bước bên dưới để gửi hồ sơ.\n\n"
-        f"### {EMOJI_VERIFY} 1. Xác thực tài khoản\n"
+        f"## {e(EMOJI_WHITELIST)} ĐĂNG KÝ WHITELIST\n"
+        f"{e(EMOJI_WELCOME)} Chào mừng bạn đến với **{guild_name}**. Hoàn thành các bước bên dưới để gửi hồ sơ.\n\n"
+        f"### {e(EMOJI_VERIFY)} 1. Xác thực tài khoản\n"
         "> Bấm **Xác thực tài khoản** để hệ thống ghi nhận Discord của bạn.\n\n"
-        f"### {EMOJI_GET_GUARANTOR} 2. Lấy mã bảo lãnh\n"
+        f"### {e(EMOJI_GET_GUARANTOR)} 2. Lấy mã bảo lãnh\n"
         "> Chỉ thành viên đã có **role Whitelist** mới lấy được mã để bảo lãnh bạn bè.\n\n"
-        f"### {EMOJI_GUARANTOR} 3. Nhập mã bảo lãnh\n"
+        f"### {e(EMOJI_GUARANTOR)} 3. Nhập mã bảo lãnh\n"
         "> Nhập mã và chờ staff duyệt. Nếu được đồng ý, hệ thống sẽ tự cấp role cho bạn.\n\n"
-        f"### {EMOJI_APPLY} 4. Nộp đơn\n"
+        f"### {e(EMOJI_APPLY)} 4. Nộp đơn\n"
         "> Điền đúng thông tin và trả lời câu hỏi Roleplay trong form.\n\n"
-        f"### {EMOJI_NOTE} Lưu ý\n"
+        f"### {e(EMOJI_NOTE)} Lưu ý\n"
         "> Thông tin sai hoặc spam form có thể bị từ chối.\n\n"
         f"-# {SETTINGS.server_name} • WHITELIST SYSTEM"
     )
@@ -209,7 +248,7 @@ def guarantor_review_colour(status: str) -> int:
 def build_guarantor_review_header(request: dict[str, Any]) -> str:
     status = str(request["status"])
     return (
-        f"## {EMOJI_GET_GUARANTOR} DUYỆT BẢO LÃNH `#{request['id']:04d}`\n"
+        f"## {usable_emoji(EMOJI_GET_GUARANTOR)} DUYỆT BẢO LÃNH `#{request['id']:04d}`\n"
         f"**Người được bảo lãnh:** <@{request['applicant_user_id']}>\n"
         f"-# @{trim(str(request['applicant_username']), 80)} • "
         f"{GUARANTOR_STATUS_LABELS.get(status, status)} • "
@@ -219,7 +258,7 @@ def build_guarantor_review_header(request: dict[str, Any]) -> str:
 
 def build_guarantor_review_body(request: dict[str, Any]) -> str:
     return (
-        f"### {EMOJI_GUARANTOR} THÔNG TIN BẢO LÃNH\n"
+        f"### {usable_emoji(EMOJI_GUARANTOR)} THÔNG TIN BẢO LÃNH\n"
         f"**Người bảo lãnh:** <@{request['owner_user_id']}>\n"
         f"**Người được bảo lãnh:** <@{request['applicant_user_id']}>\n"
         f"**Mã sử dụng:** `{request['code']}`\n"
@@ -1066,6 +1105,18 @@ class GuarantorReasonModal(discord.ui.Modal):
 
 
 class WhitelistActionRow(discord.ui.ActionRow):
+    def __init__(
+        self,
+        guild: discord.Guild | None = None,
+        permissions: discord.Permissions | None = None,
+    ) -> None:
+        super().__init__()
+        # Chỉ kiểm tra emoji khi gửi bảng thật; view persistent chỉ cần custom_id.
+        if guild is None:
+            return
+        for child in self.children:
+            if isinstance(child, discord.ui.Button) and child.emoji and child.emoji.id:
+                child.emoji = usable_emoji(str(child.emoji), guild, permissions)
     @discord.ui.button(
         label="Xác thực tài khoản",
         emoji=EMOJI_VERIFY,
@@ -1349,6 +1400,8 @@ class WhitelistPanelLayout(discord.ui.LayoutView):
         self,
         guild_name: str | None = None,
         image_filename: str | None = None,
+        guild: discord.Guild | None = None,
+        permissions: discord.Permissions | None = None,
     ) -> None:
         super().__init__(timeout=None)
         container = discord.ui.Container(accent_colour=SETTINGS.accent_colour)
@@ -1363,10 +1416,12 @@ class WhitelistPanelLayout(discord.ui.LayoutView):
             container.add_item(discord.ui.Separator())
 
         container.add_item(
-            discord.ui.TextDisplay(build_panel_text(guild_name or SETTINGS.server_name))
+            discord.ui.TextDisplay(
+                build_panel_text(guild_name or SETTINGS.server_name, guild, permissions)
+            )
         )
         container.add_item(discord.ui.Separator())
-        container.add_item(WhitelistActionRow())
+        container.add_item(WhitelistActionRow(guild, permissions))
         self.add_item(container)
 
 
@@ -1454,7 +1509,7 @@ class GuarantorReviewLayout(discord.ui.LayoutView):
         else:
             container.add_item(
                 discord.ui.TextDisplay(
-                    f"## {EMOJI_GET_GUARANTOR} VENUS GUARANTOR REVIEW"
+                    f"## {usable_emoji(EMOJI_GET_GUARANTOR)} VENUS GUARANTOR REVIEW"
                 )
             )
 
@@ -1520,8 +1575,35 @@ async def whitelist_panel(
 
     await interaction.response.defer(ephemeral=True, thinking=True)
     image_filename = SETTINGS.banner_path.name if SETTINGS.banner_path.is_file() else None
+
+    bot_member = interaction.guild.me
+    permissions = (
+        target.permissions_for(bot_member)
+        if bot_member is not None and hasattr(target, "permissions_for")
+        else None
+    )
+    if permissions is not None:
+        required = {
+            "View Channel": permissions.view_channel,
+            "Send Messages": permissions.send_messages,
+        }
+        if image_filename:
+            required["Attach Files"] = permissions.attach_files
+        missing = [name for name, allowed in required.items() if not allowed]
+        if missing:
+            await interaction.followup.send(
+                f"❌ Bot thiếu quyền tại {target.mention}: **{', '.join(missing)}**.",
+                ephemeral=True,
+            )
+            return
+
     kwargs: dict[str, Any] = {
-        "view": WhitelistPanelLayout(interaction.guild.name, image_filename),
+        "view": WhitelistPanelLayout(
+            interaction.guild.name,
+            image_filename,
+            interaction.guild,
+            permissions,
+        ),
         "allowed_mentions": ALLOWED_MENTIONS,
     }
     file: discord.File | None = None
@@ -1531,10 +1613,19 @@ async def whitelist_panel(
 
     try:
         message = await target.send(**kwargs)
-    except (discord.Forbidden, discord.HTTPException):
+    except discord.Forbidden as exc:
+        log.exception("Không gửi được whitelist panel (Forbidden)")
+        await interaction.followup.send(
+            "❌ Discord chặn bot gửi bảng tại kênh này "
+            f"(mã lỗi `{exc.code}`). Kiểm tra quyền riêng của kênh hoặc category.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException as exc:
         log.exception("Không gửi được whitelist panel")
         await interaction.followup.send(
-            "❌ Bot không gửi được bảng. Kiểm tra quyền View Channel, Send Messages và Attach Files.",
+            f"❌ Discord từ chối bảng (HTTP {exc.status}, mã `{exc.code}`):\n"
+            f"```{trim(str(exc.text), 1500)}```",
             ephemeral=True,
         )
         return

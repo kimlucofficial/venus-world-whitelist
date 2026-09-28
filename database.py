@@ -206,6 +206,49 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_latest_self_service_code(
+        self,
+        guild_id: int,
+        owner_user_id: int,
+    ) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM guarantor_codes
+                WHERE guild_id = ?
+                  AND owner_user_id = ?
+                  AND created_by = owner_user_id
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (guild_id, owner_user_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upgrade_self_service_codes(self, max_uses: int) -> int:
+        """Raise the limit of each member's latest self-service code to max_uses."""
+        if max_uses <= 0:
+            return 0
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE guarantor_codes
+                SET max_uses = ?
+                WHERE active = 1
+                  AND created_by = owner_user_id
+                  AND max_uses > 0
+                  AND max_uses < ?
+                  AND created_at = (
+                      SELECT MAX(latest.created_at) FROM guarantor_codes AS latest
+                      WHERE latest.guild_id = guarantor_codes.guild_id
+                        AND latest.owner_user_id = guarantor_codes.owner_user_id
+                        AND latest.created_by = latest.owner_user_id
+                  )
+                """,
+                (max_uses, max_uses),
+            )
+        return cursor.rowcount
+
     def apply_guarantor_code(
         self,
         *,

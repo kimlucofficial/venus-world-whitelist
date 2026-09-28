@@ -22,6 +22,24 @@ def env_int(name: str, default: int | None = None) -> int | None:
         raise RuntimeError(f"{name} phải là số nguyên.") from exc
 
 
+def env_int_list(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    values: list[int] = []
+    for part in raw.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(part)
+        except ValueError as exc:
+            raise RuntimeError(f"{name} chỉ nhận ID số, cách nhau bằng dấu phẩy.") from exc
+        if value not in values:
+            values.append(value)
+    return tuple(values)
+
+
 def env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -64,6 +82,9 @@ class Settings:
     log_channel_id: int | None
     guarantor_log_channel_id: int | None
     self_service_code_max_uses: int
+    self_service_code_renew: bool
+    guarantor_grant_role_ids: tuple[int, ...]
+    guarantor_remove_role_ids: tuple[int, ...]
     server_name: str
     timezone_name: str
     timezone: ZoneInfo
@@ -167,7 +188,16 @@ def load_settings() -> Settings:
         log_channel_id=env_int("WHITELIST_LOG_CHANNEL_ID"),
         guarantor_log_channel_id=env_int("GUARANTOR_LOG_CHANNEL_ID"),
         self_service_code_max_uses=max(
-            1, env_int("GUARANTOR_SELF_MAX_USES", 1) or 1
+            1, env_int("GUARANTOR_SELF_MAX_USES", 5) or 5
+        ),
+        self_service_code_renew=env_bool("GUARANTOR_SELF_RENEW", False),
+        guarantor_grant_role_ids=env_int_list(
+            "GUARANTOR_GRANT_ROLE_IDS",
+            (1531744174947307600, 1531744178210603151),
+        ),
+        guarantor_remove_role_ids=env_int_list(
+            "GUARANTOR_REMOVE_ROLE_IDS",
+            (1531744180966002870,),
         ),
         server_name=os.getenv("SERVER_NAME", "VENUS WORLD").strip() or "VENUS WORLD",
         timezone_name=timezone_name,

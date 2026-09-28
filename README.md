@@ -13,15 +13,16 @@ Bot whitelist riêng của Venus World, dùng **Discord Components V2** cùng ph
    - Từ chối bảo lãnh
    - Đồng ý + lý do
    - Từ chối + lý do
-6. Khi staff đồng ý, bot tự cấp role `WHITELIST_ROLE_ID` cho người được bảo lãnh.
-7. Nếu có `UNVERIFIED_ROLE_ID`, bot tự gỡ role này khi đủ quyền.
+6. Khi staff đồng ý, bot tự cấp các role trong `GUARANTOR_GRANT_ROLE_IDS` và gỡ các role trong `GUARANTOR_REMOVE_ROLE_IDS`.
+7. Nếu có `UNVERIFIED_ROLE_ID`, bot cũng tự gỡ role này khi đủ quyền.
 8. Người được bảo lãnh không cần nộp thêm đơn Whitelist.
 
 ## Cơ chế mã bảo lãnh
 
 - Chỉ người đang có role được cấu hình tại `WHITELIST_ROLE_ID` mới lấy được mã bằng nút.
-- Mỗi mã tự lấy mặc định dùng được cho **1 người**.
-- Khi mã đã dùng hết, chủ mã bấm lại sẽ nhận mã mới.
+- Mỗi người chỉ có **1 mã**, mỗi mã bảo lãnh được tối đa **5 người** (`GUARANTOR_SELF_MAX_USES`).
+- Khi mã đã dùng hết, chủ mã không nhận được mã mới (bật lại bằng `GUARANTOR_SELF_RENEW=true`).
+- Khi khởi động, bot tự nâng mã tự lấy mới nhất của từng người lên số lượt mới.
 - Mỗi lần người chơi bấm lấy mã, bot gửi log ngay.
 - Nếu chưa cấu hình kênh log riêng, log bảo lãnh sẽ dùng `WHITELIST_LOG_CHANNEL_ID`; nếu vẫn trống thì gửi vào `WHITELIST_REVIEW_CHANNEL_ID`.
 - Người nhập mã phải chờ staff duyệt bảo lãnh.
@@ -42,7 +43,7 @@ Quyền bot cần có:
 - Manage Roles
 - Use Application Commands
 
-Role bot phải nằm cao hơn role Whitelist và role chưa xác thực.
+Role bot phải nằm cao hơn role Whitelist, role chưa xác thực và toàn bộ role bảo lãnh được cấp/gỡ.
 
 ## Railway Variables
 
@@ -57,7 +58,10 @@ WHITELIST_LOG_CHANNEL_ID=ID_KENH_LOG
 
 # Không bắt buộc
 GUARANTOR_LOG_CHANNEL_ID=ID_KENH_LOG_BAO_LANH
-GUARANTOR_SELF_MAX_USES=1
+GUARANTOR_SELF_MAX_USES=5
+GUARANTOR_SELF_RENEW=false
+GUARANTOR_GRANT_ROLE_IDS=1531744174947307600,1531744178210603151
+GUARANTOR_REMOVE_ROLE_IDS=1531744180966002870
 
 SERVER_NAME=VENUS WORLD
 TIMEZONE=Asia/Ho_Chi_Minh
@@ -69,7 +73,7 @@ DATABASE_PATH=data/whitelist.db
 WHITELIST_BANNER_PATH=assets/whitelist_banner.png
 ```
 
-`GUARANTOR_LOG_CHANNEL_ID` có thể để trống. `GUARANTOR_SELF_MAX_USES=1` nghĩa là mỗi mã tự lấy bảo lãnh được một người.
+`GUARANTOR_LOG_CHANNEL_ID` có thể để trống. `GUARANTOR_SELF_MAX_USES=5` nghĩa là mỗi mã tự lấy bảo lãnh được 5 người. Các biến role bảo lãnh nhận nhiều ID, cách nhau bằng dấu phẩy; để trống thì dùng giá trị mặc định ở trên.
 
 ## Railway Volume
 

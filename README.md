@@ -71,7 +71,15 @@ MIN_ACCOUNT_AGE_DAYS=0
 MIN_JOIN_AGE_MINUTES=0
 DATABASE_PATH=data/whitelist.db
 WHITELIST_BANNER_PATH=assets/whitelist_banner.png
+
+# Tự động trả lời
+AUTO_REPLY_CHANNEL_ID=1555069801960050759
+AUTO_REPLY_WHITELIST_CHANNEL_ID=1531744196443111686
+AUTO_REPLY_GUARANTOR_CHANNEL_ID=1531744196443111686
+AUTO_REPLY_COOLDOWN_SECONDS=60
 ```
+
+Auto-reply: ai chat trong `AUTO_REPLY_CHANNEL_ID` sẽ được bot reply bằng embed hướng dẫn nộp whitelist và bảo lãnh. Mỗi người chỉ được bot reply lại sau `AUTO_REPLY_COOLDOWN_SECONDS` giây (chống spam). Đặt `AUTO_REPLY_CHANNEL_ID=0` để tắt. Bot cần quyền **View Channel, Send Messages, Embed Links, Read Message History** tại kênh đó. Không cần bật Message Content Intent.
 
 `GUARANTOR_LOG_CHANNEL_ID` có thể để trống. `GUARANTOR_SELF_MAX_USES=5` nghĩa là mỗi mã tự lấy bảo lãnh được 5 người. Các biến role bảo lãnh nhận nhiều ID, cách nhau bằng dấu phẩy; để trống thì dùng giá trị mặc định ở trên.
 

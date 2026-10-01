@@ -141,7 +141,7 @@ def build_panel_text(
         "> Điền đúng thông tin và trả lời câu hỏi Roleplay trong form.\n\n"
         f"### {e(EMOJI_NOTE)} Lưu ý\n"
         "> Thông tin sai hoặc spam form có thể bị từ chối.\n\n"
-        f"-# {SETTINGS.server_name} • WHITELIST SYSTEM"
+        f"-# {e(EMOJI_NOTE)} **LƯU Ý:** THÀNH PHỐ CHỈ DÀNH CHO NGƯỜI CÓ ĐỘ TUỔI **18 TRỞ LÊN**"
     )
 
 
@@ -1547,6 +1547,77 @@ class VenusWhitelistBot(commands.Bot):
 intents = discord.Intents.default()
 intents.members = True
 bot = VenusWhitelistBot(command_prefix=commands.when_mentioned, intents=intents)
+
+
+AUTO_REPLY_LAST: dict[int, float] = {}
+AUTO_REPLY_MENTIONS = discord.AllowedMentions(
+    everyone=False, users=False, roles=False, replied_user=True
+)
+
+
+def build_auto_reply_embed(
+    member: discord.abc.User,
+    guild: discord.Guild,
+    permissions: discord.Permissions | None,
+) -> discord.Embed:
+    def e(raw: str) -> str:
+        return usable_emoji(raw, guild, permissions)
+
+    description = (
+        f"## {e(EMOJI_WHITELIST)} HƯỚNG DẪN VÀO THÀNH PHỐ\n"
+        f"{e(EMOJI_WELCOME)} Chào {member.mention}, cảm ơn bạn đã ghé **{SETTINGS.server_name}**!\n\n"
+        f"### {e(EMOJI_APPLY)} Nộp whitelist\n"
+        f"> Nộp đơn whitelist tại <#{SETTINGS.auto_reply_whitelist_channel_id}>\n\n"
+        f"### {e(EMOJI_GUARANTOR)} Bảo lãnh\n"
+        f"> Lấy và nhập mã bảo lãnh tại <#{SETTINGS.auto_reply_guarantor_channel_id}>\n\n"
+        f"### {e(EMOJI_NOTE)} Cần hỗ trợ\n"
+        "> Bất kì câu hỏi gì cứ tag thẳng **Ban Quản Trị** nhé!"
+    )
+    embed = discord.Embed(description=description, colour=SETTINGS.accent_colour)
+    embed.set_footer(text=SETTINGS.server_name)
+    return embed
+
+
+@bot.event
+async def on_message(message: discord.Message) -> None:
+    channel_id = SETTINGS.auto_reply_channel_id
+    if (
+        not channel_id
+        or message.guild is None
+        or message.author.bot
+        or message.webhook_id is not None
+        or message.channel.id != channel_id
+        or message.type not in (discord.MessageType.default, discord.MessageType.reply)
+    ):
+        return
+
+    now = asyncio.get_running_loop().time()
+    cooldown = SETTINGS.auto_reply_cooldown_seconds
+    last = AUTO_REPLY_LAST.get(message.author.id)
+    if last is not None and now - last < cooldown:
+        return
+    AUTO_REPLY_LAST[message.author.id] = now
+    if len(AUTO_REPLY_LAST) > 5000:
+        for user_id, stamp in list(AUTO_REPLY_LAST.items()):
+            if now - stamp >= cooldown:
+                AUTO_REPLY_LAST.pop(user_id, None)
+
+    me = message.guild.me
+    permissions = message.channel.permissions_for(me) if me is not None else None
+    if permissions is not None and not (
+        permissions.send_messages and permissions.embed_links and permissions.read_message_history
+    ):
+        log.warning("Thiếu quyền auto-reply tại kênh %s", channel_id)
+        return
+
+    try:
+        await message.reply(
+            embed=build_auto_reply_embed(message.author, message.guild, permissions),
+            allowed_mentions=AUTO_REPLY_MENTIONS,
+            mention_author=True,
+        )
+    except discord.HTTPException:
+        log.exception("Không gửi được auto-reply tại kênh %s", channel_id)
 
 
 @bot.event

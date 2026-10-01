@@ -95,6 +95,10 @@ class Settings:
     questions: tuple[Question, ...]
     database_path: Path
     banner_path: Path
+    auto_reply_channel_id: int | None
+    auto_reply_whitelist_channel_id: int
+    auto_reply_guarantor_channel_id: int
+    auto_reply_cooldown_seconds: int
 
 
 def load_questions(path: Path) -> tuple[Question, ...]:
@@ -209,4 +213,12 @@ def load_settings() -> Settings:
         questions=load_questions(BASE_DIR / "questions.json"),
         database_path=database_path,
         banner_path=banner_path,
+        auto_reply_channel_id=env_int("AUTO_REPLY_CHANNEL_ID", 1555069801960050759),
+        auto_reply_whitelist_channel_id=env_int(
+            "AUTO_REPLY_WHITELIST_CHANNEL_ID", 1531744196443111686
+        ) or 1531744196443111686,
+        auto_reply_guarantor_channel_id=env_int(
+            "AUTO_REPLY_GUARANTOR_CHANNEL_ID", 1531744196443111686
+        ) or 1531744196443111686,
+        auto_reply_cooldown_seconds=max(0, env_int("AUTO_REPLY_COOLDOWN_SECONDS", 60) or 0),
     )
